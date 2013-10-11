@@ -1,1 +1,1 @@
-./jython src/grabber.py
+./jython src/spadefb.py

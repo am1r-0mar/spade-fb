@@ -4,7 +4,7 @@
 
 DIR="$( cd "$( dirname "$0" )" && pwd )"
 
-java -Dpython.home=$DIR/jython-home -Dpython.path=$DIR/src/ -Dpython.executable="$0" -jar $DIR/libs/jython-standalone-2.7-b1.jar $*
-
+# java -Dpython.home=$DIR/jython-home -Dpython.path=$DIR/src/ -Dpython.executable="$0" -jar $DIR/libs/jython-standalone-2.7-b1.jar $*
+java -Dpython.home=$DIR/jython-home -Dpython.path=$DIR/src/ -Dpython.executable="$0" -jar $DIR/libs/jython-standalone-2.5.3.jar $*
 
 
