@@ -13,3 +13,8 @@ def ignore_exception(IgnoreException=Exception,DefaultVal=None):
                 return DefaultVal if not hasattr(DefaultVal, "__call__") else DefaultVal()
         return _dec
     return dec
+
+def filter_dict(d, filter_list): 
+    if type(filter_list) == str:
+        filter_list = filter_list.split()
+    return dict( (k,v) for k,v in d.iteritems() if k not in filter_list )
