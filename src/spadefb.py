@@ -21,7 +21,7 @@ CREATE_NODES_FOR_NONFRIENDS = False
 if not os.path.exists(DUMPDIR):
     os.makedirs(DUMPDIR)
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 class FBDownloader:
@@ -110,29 +110,77 @@ class FBDownloader:
 		f.write(jsondata)
 		f.close()
 
+class IDMapper:
+	""" Creates and maintains numerics SPADE IDs against Facebook's semi-numeric IDs
+
+	Tests
+
+	>>> mapper = IDMapper()
+	>>> mapper[None]
+	None
+	>>> mapper["hello"] 
+	0
+	>>> mapper["world"]
+	1
+	>>> mapper[1337]
+	2
+	>>> mapper["world"]
+	1
+	>>> mapper[1337]
+	2
+	>>> mapper[None]
+	None
+	"""
+
+	def __init__(self):
+		self._next_id = 0
+		self._mapping = {}
+
+	def __getitem__(self, itemid):
+		if itemid is None:
+			return None
+		if self._mapping.has_key(itemid):
+			return self._mapping[itemid]
+		else:
+			ret = self._mapping[itemid] = self._next_id
+			self._next_id += 1
+			return ret 
+
+id_mapper = IDMapper()
+
 class DSLSerializable:
 	""" Used to represent a Node or Edge and serialize it for SPADE DSL Reporter"""
-	def __init__(self, stype, s_id=None):
+	def __init__(self, stype, fb_obj_id=None):
 		self.attrs = {}
 		self.stype = stype
-		self.s_id = s_id
+		self.fb_obj_id = fb_obj_id
+
+	def _keyval_serialize(self, k,v):
+		global id_mapper
+		if k in ['from', 'to', 'id']:
+			v = id_mapper[v]
+		esc = self._escape_data
+		return (esc(k), esc(unicode(v)) )
 
 	def serialize(self):
 		""" Returns a serialized verion of the data """
+		global id_mapper
 		esc = self._escape_data
-		attrdata = " ".join( "%s:%s" % (esc(k), esc(unicode(v))) for k,v in self.attrs.iteritems() if k not in ['id'])
-		if self.s_id:
-			return "type:%s id:%s %s\n" % (esc(self.stype), esc(self.s_id), attrdata)
+		
+		attrdata = " ".join( "%s:%s" % self._keyval_serialize(k,v) for k,v in self.attrs.iteritems() if k not in ['id'])
+		if self.fb_obj_id:
+			return "type:%s id:%s %s\n" % (esc(self.stype), id_mapper[self.fb_obj_id], attrdata)
 		else:
 			return "type:%s %s\n" % (esc(self.stype), attrdata)
 
 
 	def add_attr(self, key, val):
 		remap = {'type': 'fbtype', 'id': 'fbid', 'actions': 'fbactions'}
-		if not remap.has_key(key):		
-			self.attrs[key] = val
-		else:
-			self.attrs[ remap[key] ] = val
+
+		if remap.has_key(key):
+			key = remap[key]
+
+		self.attrs[ key ] = val
 
 	def add_attrs(self, attrs):
 		for k,v in attrs.iteritems():
@@ -151,6 +199,7 @@ class DSLSerializable:
 				import code
 				code.interact(local=locals())
 			raise e
+
 
 class SPADEFeeder:
 
@@ -231,9 +280,26 @@ class SPADEFeeder:
 						# Create Node
 						node = DSLSerializable("Artifact", activity['id'])
 						node.add_attr("time", activity['created_time'])
-						node.add_attrs( filter_dict(activity, ['likes', 'shares', 'from', 'created_time']) )
+						node.add_attrs( filter_dict(activity, ['likes', 'shares', 'to', 'from', 'created_time']) )
 						self.write_dsl(node)
-						if not activity.get("from") or (activity.get("from") and activity.get("from") == fuid):
+
+						# TODO: Handle, to/from specific cases separately
+
+						if activity.get("from"):
+							post_from = activity["from"]["id"]
+							self.create_person_node_if_not_exists(activity["from"]["id"], activity["from"])
+						else:
+							post_from = fuid
+
+						if activity.get("to"):
+							post_to = [i["id"] for i in activity["to"]["data"] ]
+							for i in activity["to"]["data"]:
+								self.create_person_node_if_not_exists(i["id"], i)
+						else:
+							post_to = [fuid]
+
+
+						if post_from == post_to:
 							# Create edge between owner and created node
 							edge = DSLSerializable("WasGeneratedBy")
 							edge.add_attr("from", activity['id'])
@@ -245,22 +311,23 @@ class SPADEFeeder:
 							# and a Read edge from the user on whose timeline was posted to the post
 							edge = DSLSerializable("WasGeneratedBy")
 							edge.add_attr("from", activity['id'])
-							edge.add_attr("to", activity['from'])
+							edge.add_attr("to", post_from)
 							edge.add_attr("context", "timeline_post")
 							self.write_dsl(edge)
 
-							edge = DSLSerializable("WasControlledBy")
-							edge.add_attr("from", activity['id'])
-							edge.add_attr("to", fuid)
-							edge.add_attr("context", "timeline_post")
-							self.write_dsl(edge)
+							for target_id in post_to:
+								edge = DSLSerializable("WasControlledBy")
+								edge.add_attr("from", activity['id'])
+								edge.add_attr("to", target_id)
+								edge.add_attr("context", "timeline_post")
+								self.write_dsl(edge)
 
 						# Handle post likes
 						if activity.has_key("likes"):
 							# TODO: Handle pagination for large number of likes on a post
 							for like in activity['likes']['data']:
 								if CREATE_NODES_FOR_NONFRIENDS:
-									self.create_person_node_if_not_exists(like)
+									self.create_person_node_if_not_exists(like['id'], like)
 								if CREATE_NODES_FOR_NONFRIENDS or self.friends.has_key(like['id']):
 									edge = DSLSerializable("Used")
 									edge.add_attr("from", like['id'])
@@ -276,7 +343,7 @@ class SPADEFeeder:
 									self.create_person_node_if_not_exists(commenter['id'], commenter)
 								if CREATE_NODES_FOR_NONFRIENDS or self.friends.has_key(like['id']):
 									comment_node =  DSLSerializable("Artifact", comment['id'])
-									comment_node.add_attrs(comment)
+									comment_node.add_attrs( filter_dict(comment, ['from','id', 'to', 'likes']) )
 									comment_node.add_attr("type", "comment")
 									self.write_dsl(comment_node)
 
@@ -318,6 +385,11 @@ class SPADEFeeder:
 if __name__ == '__main__':
 
 	logger = logging.getLogger("SPADE-FB")
+
+	if "--test" in sys.argv:
+		import doctest
+		doctest.testmod()
+		sys.exit(0)
 
 	if "--fetch" in sys.argv:
 		fbsaver = FBDownloader(DUMPDIR)
