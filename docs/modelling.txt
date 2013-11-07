@@ -1,0 +1,60 @@
+
+A sets status P (A posts on his own timeline):
+============================================
+
+UserA(Agent) <--WCB-- Status(Process) <--WGB-- Status(Artifact) <--Used-- Timeline(Process) --WCB--> UserA(Agent)
+
+
+A comments on B's Post on C's timeline:
+=======================================
+                                                                                     
+UserA(Agent) <--WCB-- Comment(Process) <--WGB-- Comment(Artifact) 
+                                                       |
+                                                       |
+                                            WasDerivedFrom--> Post(Artifact) --WGB--> Post(Process) --WCB--> UserB(Agent)
+                                                                        ^
+                                                                        |
+                                                                        |---Used-- TimeLine(Process) --WCB--> UserC(Agent)
+
+
+
+
+A likes Post P:
+===============
+
+UserA(Agent) <--WCB-- Likes(Process) --Used--> Post(Artifact)
+
+
+A shared a post via B:
+======================
+
+
+UserB(Agent) <--WCB-- Post(Process) <--WGB-- Post(Artifact) <--Used-- Timeline(Process) --WCB--> UserB(Agent)
+                                                   ^
+                                                   |
+                                                   |
+                                               WasDerivedFrom
+                                                   |
+                                                   |
+UserA(Agent) <--WCB-- Post(Process) <--WGB-- Post(Artifact) <--Used-- Timeline(Process) --WCB--> UserA(Agent)
+                              
+
+
+B was tagged in Post P:
+======================
+
+UserB(Agent) <--WCB-- Tagged(Process) --Used--> Post(artifact) ...
+
+
+
+
+A is friend with B:
+===================
+
+UserB(Agent) <--WCB-- Friendship(Process)
+                          |      ^
+                          |      |
+                        WasTriggeredBy
+                          |      |
+                         \_/     |
+UserA(Agent) <--WCB-- Friendship(Process)
