@@ -3,6 +3,7 @@ import os
 import logging
 import pdb
 import code
+from time import sleep
 
 from java.io import BufferedWriter, OutputStreamWriter, FileOutputStream
 
@@ -12,6 +13,8 @@ import fbconsole
 from os import path
 
 from utils import ignore_exception, filter_dict
+
+
 
 REPL_DEBUG = True
 SOCKET_PATH = "/tmp/spade"
@@ -23,6 +26,8 @@ if not os.path.exists(DUMPDIR):
 
 logging.basicConfig(level=logging.DEBUG)
 
+FB_ACTIVITY_TYPES = "status photo comment link".split()
+SPADE_FB_PROCESSES = FB_ACTIVITY_TYPES + "likes timeline friendship".split()
 
 class FBDownloader:
 	""" 
@@ -212,8 +217,8 @@ class SPADEFeeder:
 				Make sure SPADE is running and DSL reporter has been setup. 
 				For more infromation, take a look at http://code.google.com/p/data-provenance/wiki/Pipe""")
 		self.pipe = BufferedWriter( OutputStreamWriter(FileOutputStream( dsl_pipe ) ))
-		self.logger = logging.getLogger(self.__class__.__name__)
 
+		self.logger = logging.getLogger(self.__class__.__name__)
 
 		self.user_data = self._read_json_data("me_data")
 		self.user_newsfeed = self._read_json_data("me_newsfeed")
@@ -231,13 +236,30 @@ class SPADEFeeder:
 		self.friends[self.user_data['id']] = self.user_data
 
 	def create_person_node_if_not_exists(self, user_id, userdata):
-		""" Creates a person node if it doesn't already exists """
+		""" 
+		Creates a person's Agent node, Status, Likes, Comment, Timeline and Post process nodes
+		"""
 		try:
 			if user_id in self.created_user_nodes:
 				return False
-			person_node = DSLSerializable("Process", user_id)
+
+			person_node = DSLSerializable("Agent", user_id + ".agent")
 			person_node.add_attrs(userdata)
 			self.write_dsl(person_node)
+
+			for process in SPADE_FB_PROCESSES:
+				node_id = user_id + "." + process;
+				node = DSLSerializable("Process", node_id)
+				node.add_attr("name", process)
+				node.add_attr("fbuid", user_id)
+				node.add_attr("fbname", userdata.get("name", "[None]"))
+				self.write_dsl(node)
+				edge = DSLSerializable("WasControlledBy")
+				edge.add_attr("to", user_id + ".agent")
+				edge.add_attr("from", node_id)
+				self.write_dsl(edge)
+
+
 			self.created_user_nodes.add(user_id)
 			return True
 		except Exception, e:
@@ -259,17 +281,37 @@ class SPADEFeeder:
 		"""
 
 		# Create nodes for all users
+		me_fbuid = self.user_data['id']
+		self.create_person_node_if_not_exists(me_fbuid, self.user_data)
+
 		for fuid, userdata in self.friends.iteritems():
 			try:
 				self.create_person_node_if_not_exists(fuid, userdata)
+
+				# Friendship edges
+				edge = DSLSerializable("WasTriggeredBy")
+				edge.add_attr("from", fuid+".friendship")
+				edge.add_attr("to", me_fbuid+".friendship")
+				self.write_dsl(edge)
+
+				edge = DSLSerializable("WasTriggeredBy")
+				edge.add_attr("to", fuid+".friendship")
+				edge.add_attr("from", me_fbuid+".friendship")
+				self.write_dsl(edge)
+
 			except Exception, e:
+				logger.exception("Error while creating user node")
 				if REPL_DEBUG:
 					import code
 					code.interact(local=locals())
 
 		# For each person
 		for fuid, userdata in self.friends.iteritems():
+
+			pass
 			try:
+
+				# Create friendship edges
 				userfeed = self._read_json_data("%s_feed" % fuid)
 				logger.info("Now processing feed of user %s" % fuid)
 
@@ -280,10 +322,8 @@ class SPADEFeeder:
 						# Create Node
 						node = DSLSerializable("Artifact", activity['id'])
 						node.add_attr("time", activity['created_time'])
-						node.add_attrs( filter_dict(activity, ['likes', 'shares', 'to', 'from', 'created_time']) )
+						node.add_attrs( filter_dict(activity, ['likes', 'shares', 'to', 'from', 'created_time', 'comments']) )
 						self.write_dsl(node)
-
-						# TODO: Handle, to/from specific cases separately
 
 						if activity.get("from"):
 							post_from = activity["from"]["id"]
@@ -298,29 +338,24 @@ class SPADEFeeder:
 						else:
 							post_to = [fuid]
 
-
-						if post_from == post_to:
-							# Create edge between owner and created node
-							edge = DSLSerializable("WasGeneratedBy")
-							edge.add_attr("from", activity['id'])
-							edge.add_attr("to", fuid)
-							edge.add_attr("context", "timeline")
-							self.write_dsl(edge)
+						# TODO: Handle shares separately
+						if activity.get("type") in FB_ACTIVITY_TYPES:
+							activity_type = activity.get("type")
 						else:
-							# Create a WasGeneratedBy edge from the user who posted to the post 
-							# and a Read edge from the user on whose timeline was posted to the post
-							edge = DSLSerializable("WasGeneratedBy")
-							edge.add_attr("from", activity['id'])
-							edge.add_attr("to", post_from)
-							edge.add_attr("context", "timeline_post")
-							self.write_dsl(edge)
+							default_activity = "status"
+							activity_type = activity.get("type", default_activity)
+							logger.warn( "Uknown FB Activity type: %s. Resorting to %s" % ( str(activity.get("type")), default_activity) )
 
-							for target_id in post_to:
-								edge = DSLSerializable("WasControlledBy")
-								edge.add_attr("from", activity['id'])
-								edge.add_attr("to", target_id)
-								edge.add_attr("context", "timeline_post")
-								self.write_dsl(edge)
+						edge = DSLSerializable("WasGeneratedBy")
+						edge.add_attr("from", post_from + "." + activity_type)
+						edge.add_attr("to", activity['id'])
+						self.write_dsl(edge)
+
+						for i in post_to:
+							edge = DSLSerializable("Used")
+							edge.add_attr("from", i + ".timeline")
+							edge.add_attr("to", activity['id'])
+							self.write_dsl(edge)
 
 						# Handle post likes
 						if activity.has_key("likes"):
@@ -330,9 +365,8 @@ class SPADEFeeder:
 									self.create_person_node_if_not_exists(like['id'], like)
 								if CREATE_NODES_FOR_NONFRIENDS or self.friends.has_key(like['id']):
 									edge = DSLSerializable("Used")
-									edge.add_attr("from", like['id'])
+									edge.add_attr("from", like['id'] + ".likes")
 									edge.add_attr("to", activity['id'])
-									edge.add_attr("context", "like")
 									self.write_dsl(edge)
 
 						# Handle post comments
@@ -347,17 +381,15 @@ class SPADEFeeder:
 									comment_node.add_attr("type", "comment")
 									self.write_dsl(comment_node)
 
-									edge = DSLSerializable("WasDerivedBy")
-									edge.add_attr("from", comment['id'])
-									edge.add_attr("to", activity['id'])
-									self.write_dsl(edge)
-
 									edge = DSLSerializable("WasGeneratedBy")
 									edge.add_attr("from", comment['id'])
-									edge.add_attr("to", commenter['id'])
-									self.write_dsl(edge)
+									edge.add_attr("to", commenter['id'] + ".process")
+									self.write_dsl(comment_node)
 
-
+									edge = DSLSerializable("WasDerivedFrom")
+									edge.add_attr("from", comment['id'])
+									edge.add_attr("to", activity['id'])
+									self.write_dsl(comment_node)
 
 						# TODO: Handle Facebook shares in one collapsed node?
 
@@ -369,8 +401,14 @@ class SPADEFeeder:
 			except IOError, e:
 				logger.info("Unavailable feed details of %s. Skipping ... " % fuid)
 			except Exception, e:
+				logger.exception("")
 				if REPL_DEBUG:
 					import code;	code.interact(local=locals())
+			finally:
+				try:
+					self.pipe.flush()
+				except Exception, e:
+					pass
 
 	def _read_json_data(self, filename):
 		if not filename.endswith(".json"):
@@ -396,11 +434,12 @@ if __name__ == '__main__':
 		fbsaver.download()
 
 	if "--nofeed" not in sys.argv:
-		logger.debug("Setting up Feeder for /tmp/spade")
-		feeder = SPADEFeeder(DUMPDIR, "/tmp/spade")
+		logger.debug("Setting up Feeder for %s" % SOCKET_PATH)
+		feeder = SPADEFeeder(DUMPDIR, SOCKET_PATH)
 		logger.info("Feeder initialized. Now feeding")
 		feeder.feed()
 		logger.info("Fed data to SPADE!")
+		sleep(1)
 
 	if "--post-introspect" in sys.argv:
 		# drop an interactive shell for tinkering around
